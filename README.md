@@ -31,9 +31,11 @@ Wine / Proton runtime. Xbox sign-in and cloud saves work for supported games.
 ## Download
 
 Get the Flatpak from the [latest release](https://github.com/Thri11ride/XNArch/releases/latest)
-([direct download](https://github.com/Thri11ride/XNArch/releases/download/v0.3.12-xnarch.1/XNArch-0.3.12-xnarch.1.flatpak)), then install it:
+([direct download](https://github.com/Thri11ride/XNArch/releases/download/v0.3.12-xnarch.1/XNArch-0.3.12-xnarch.1.flatpak)), then install it.
+The bundle needs the Freedesktop runtime from Flathub, so add Flathub first if you have not already:
 
 ```sh
+flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 flatpak install --user XNArch-0.3.12-xnarch.1.flatpak
 ```
 
