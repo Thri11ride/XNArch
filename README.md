@@ -28,6 +28,15 @@ Wine / Proton runtime. Xbox sign-in and cloud saves work for supported games.
 - The dev window runs on X11 with the GPU disabled for stability on Wayland desktops.
 - Upstream bug-report, wiki and support links are removed from the project docs and the first-run notice.
 
+## Download
+
+Get the Flatpak from the [latest release](https://github.com/Thri11ride/XNArch/releases/latest)
+([direct download](https://github.com/Thri11ride/XNArch/releases/download/v0.3.12-xnarch.1/XNArch-v0.3.12-xnarch.1.flatpak)), then install it:
+
+```sh
+flatpak install --user XNArch-v0.3.12-xnarch.1.flatpak
+```
+
 ## Build
 
 Requires Node.js, `flatpak` and `flatpak-builder`.
