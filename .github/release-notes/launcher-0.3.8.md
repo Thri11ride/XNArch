@@ -12,7 +12,7 @@ Update the Nexus backend to **0.2.8** in Settings for Xbox activity, achievement
 > [!CAUTION]
 > **Xodus Nexus is an independent, unofficial project built on Xodus. It is not an official project or release from the upstream Xodus developers.**
 >
-> Please report Xodus Nexus issues only in the [Xodus Nexus repository](https://github.com/domsvoboda/xodus-nexus/issues). A problem in Nexus does not necessarily indicate a problem in upstream Xodus.
+> Please report Xodus Nexus issues only in the upstream Xodus Nexus repository. A problem in Nexus does not necessarily indicate a problem in upstream Xodus.
 
 ## Steam Deck and similar handhelds
 

@@ -1217,8 +1217,8 @@ export function FirstRunWizard({ data, toast }: { data: AppSnapshot; toast: (val
       <section className="wizard-disclaimer" role="note" aria-labelledby="wizard-disclaimer-title">
         <CircleAlert aria-hidden="true" />
         <div><h2 id="wizard-disclaimer-title">Independent, unofficial project</h2>
-          <p>Xodus Nexus is built on Xodus, but it is <strong>not an official Xodus project</strong> and is not developed or maintained by the upstream Xodus developers.</p>
-          <p>Please report Nexus issues only in the <a href="https://github.com/domsvoboda/xodus-nexus/issues" target="_blank" rel="noopener noreferrer">Nexus repository</a>, not upstream. A problem in Nexus may not exist in upstream Xodus.</p>
+          <p>XNArch is just a slightly tweaked and cleaned up version of Xodus Nexus v0.3.12, packaged as a Flatpak for Arch Linux. It is <strong>not an official Xodus or Xodus Nexus project</strong> and is not developed or maintained by their developers.</p>
+          <p>Please do not report XNArch problems to the Xodus Nexus or upstream Xodus issue trackers. Original work by the <a href="https://github.com/domsvoboda/xodus-nexus" target="_blank" rel="noopener noreferrer">Xodus Nexus</a> and <a href="https://github.com/xodus-gaming/xodus" target="_blank" rel="noopener noreferrer">Xodus</a> developers.</p>
         </div>
       </section>
       <p>Choose where games install. Everything else can be changed later in Settings.</p>

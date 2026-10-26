@@ -8,11 +8,12 @@ it('shows the upstream distinction and Nexus-only reporting before setup and sig
   const notice = html.match(/<section class="wizard-disclaimer"[^>]*>[\s\S]*?<\/section>/)?.[0];
   expect(notice).toContain('role="note"');
   expect(notice).toContain('Independent, unofficial project');
-  expect(notice).toContain('not an official Xodus project');
-  expect(notice).toContain('not developed or maintained by the upstream Xodus developers');
-  expect(notice).toContain('https://github.com/domsvoboda/xodus-nexus/issues');
+  expect(notice).toContain('XNArch is just a slightly tweaked and cleaned up version of Xodus Nexus v0.3.12');
+  expect(notice).toContain('not an official Xodus or Xodus Nexus project');
+  expect(notice).not.toContain('/issues');
+  expect(notice).toContain('https://github.com/domsvoboda/xodus-nexus"');
+  expect(notice).toContain('https://github.com/xodus-gaming/xodus"');
   expect(notice).toContain('target="_blank" rel="noopener noreferrer"');
-  expect(notice).toContain('A problem in Nexus may not exist in upstream Xodus.');
   expect(html.indexOf('wizard-disclaimer')).toBeLessThan(html.indexOf('Games folder'));
   expect(html).toMatch(/<input[^>]*data-gamepad-initial/);
   expect(html).toContain('Start using Xodus Nexus');
