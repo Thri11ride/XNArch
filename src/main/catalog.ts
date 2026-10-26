@@ -1,6 +1,7 @@
 import type { CatalogProduct, CatalogSearchResult, GameStoreDetails } from '../shared/types.js';
 
 type Fetcher = typeof fetch;
+type CatalogMediaType = 'games' | 'apps';
 
 interface StoreImage {
   imageType?: unknown;
@@ -29,6 +30,8 @@ interface StoreSearchProduct {
   averageRating?: unknown;
   redirectUrl?: unknown;
   isGame?: unknown;
+  isFree?: unknown;
+  isFreeToPlay?: unknown;
 }
 
 interface StoreSearchResponse {
@@ -135,15 +138,46 @@ function includedWith(product: StoreSearchProduct): string | undefined {
   return undefined;
 }
 
-function purchasePrice(product: StoreSearchProduct): string | undefined {
-  const price = string(object(product.priceInfo)?.displayPrice);
-  if (price && price.toLowerCase() !== 'included') return price;
+function purchaseOffer(product: StoreSearchProduct): { price?: string; type?: CatalogProduct['priceType']; available: boolean } {
+  const info = object(product.priceInfo);
+  const displayPrice = string(info?.displayPrice);
+  const rawValue = info?.price ?? info?.amount ?? info?.listPrice;
+  const categories = Array.isArray(product.categories) ? product.categories.flatMap(value => string(value) ?? []) : [];
+  const freeToPlay = product.isFreeToPlay === true || info?.isFreeToPlay === true
+    || categories.some(category => /free[\s-]+to[\s-]+play/i.test(category));
+  if (freeToPlay) return { price: 'Free-to-play', type: 'free-to-play', available: true };
+  if (displayPrice && displayPrice.toLowerCase() !== 'included') {
+    const isFree = product.isFree === true || info?.isFree === true || (typeof rawValue === 'number' && rawValue === 0)
+      || /^(free|\$0(?:\.00)?|€0(?:\.00)?|£0(?:\.00)?)$/i.test(displayPrice.trim());
+    return { price: isFree ? 'Free' : displayPrice, type: isFree ? 'free' : 'paid', available: true };
+  }
   const summaries = Array.isArray(product.skusSummary) ? product.skusSummary : [];
   for (const summary of summaries) {
     const display = string(object(summary)?.displayMSRP);
-    if (display) return display;
+    if (display) {
+      const isFree = typeof rawValue === 'number' && rawValue === 0 || /^(free|\$0(?:\.00)?|€0(?:\.00)?|£0(?:\.00)?)$/i.test(display.trim());
+      return { price: isFree ? 'Free' : display, type: isFree ? 'free' : 'paid', available: true };
+    }
   }
-  return price;
+  if (displayPrice?.toLowerCase() === 'included') return { price: 'Included', type: 'included', available: true };
+  if (string(product.plaintextPassName)) return { price: 'Included', type: 'included', available: true };
+  for (const summary of summaries) {
+    const included = object(summary)?.includedWith;
+    if (Array.isArray(included) && included.some(entry => string(object(entry)?.name))) {
+      return { price: 'Included', type: 'included', available: true };
+    }
+  }
+  if (product.isFree === true || info?.isFree === true || (typeof rawValue === 'number' && rawValue === 0)) return { price: 'Free', type: 'free', available: true };
+  return { available: false };
+}
+
+export function catalogPriceValue(rawPrice?: string): number | undefined {
+  if (!rawPrice) return undefined;
+  const price = rawPrice.replace(/[^0-9.,]/g, '').replace(/,/g, '.');
+  const match = price.match(/\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const value = Number(match[0]);
+  return Number.isFinite(value) ? value : undefined;
 }
 
 function directPackageSupport(product: Record<string, unknown> | undefined): PackageSupport | undefined {
@@ -241,7 +275,7 @@ function packageSupport(productId: string, details: Map<string, Record<string, u
   };
 }
 
-export function parseCatalogProducts(search: StoreSearchResponse, catalog: DisplayCatalogResponse): CatalogProduct[] {
+export function parseCatalogProducts(search: StoreSearchResponse, catalog: DisplayCatalogResponse, options: { allowUnpriced?: boolean; allowNonGames?: boolean } = {}): CatalogProduct[] {
   const detailMap = new Map<string, Record<string, unknown>>();
   const details = Array.isArray(catalog.Products) ? catalog.Products : [];
   for (const detail of details) {
@@ -253,7 +287,9 @@ export function parseCatalogProducts(search: StoreSearchResponse, catalog: Displ
   return products.flatMap((product) => {
     const productId = string(product.productId)?.toUpperCase();
     const title = string(product.title);
-    if (!productId || !title || product.isGame === false) return [];
+    if (!productId || !title || (product.isGame === false && !options.allowNonGames)) return [];
+    const offer = purchaseOffer(product);
+    if (!options.allowUnpriced && !offer.available) return [];
     const support = packageSupport(productId, detailMap);
     return [{
       productId,
@@ -264,7 +300,9 @@ export function parseCatalogProducts(search: StoreSearchResponse, catalog: Displ
       heroUrl: findHero(product),
       storeUrl: safeUrl(product.redirectUrl, STORE_HOSTS),
       categories: Array.isArray(product.categories) ? product.categories.flatMap((entry) => string(entry) ?? []) : [],
-      purchasePrice: purchasePrice(product),
+      purchasePrice: offer.price,
+      priceType: offer.type,
+      isApp: options.allowNonGames === true,
       includedWith: includedWith(product),
       releaseDate: string(product.releaseDateUtc),
       averageRating: typeof product.averageRating === 'number' ? product.averageRating : undefined,
@@ -325,7 +363,7 @@ export class CatalogService {
     });
     // Ownership and installation support are independent. Preserve the game's
     // real package status for the library badge and Ready to install filter.
-    return parseCatalogProducts({ productsList: rows }, catalog);
+    return parseCatalogProducts({ productsList: rows }, catalog, { allowUnpriced: true });
   }
 
   private async fetchDetails(batch: string[], market: string): Promise<Record<string, unknown>[]> {
@@ -410,7 +448,7 @@ export class CatalogService {
     return { Products: [...details.values()] };
   }
 
-  private async result(search: StoreSearchResponse, query: string, market: string, includePaging: boolean): Promise<CatalogSearchResult> {
+  private async result(search: StoreSearchResponse, query: string, market: string, includePaging: boolean, mediaType: CatalogMediaType = 'games'): Promise<CatalogSearchResult> {
     const ids = (Array.isArray(search.productsList) ? search.productsList as StoreSearchProduct[] : [])
       .flatMap((product) => string(product.productId)?.toUpperCase() ?? [])
       .filter((value, index, values) => values.indexOf(value) === index);
@@ -418,7 +456,7 @@ export class CatalogService {
     return {
       query,
       market,
-      products: parseCatalogProducts(search, catalog),
+      products: parseCatalogProducts(search, catalog, { allowNonGames: mediaType === 'apps' }),
       cursor: includePaging ? string(search.cursor) : undefined,
       hasMore: includePaging && search.hasMorePages === true && Boolean(string(search.cursor)),
       fetchedAt: new Date().toISOString(),
@@ -426,43 +464,45 @@ export class CatalogService {
     };
   }
 
-  async search(rawQuery: string, rawMarket: string, cursor?: string): Promise<CatalogSearchResult> {
+  async search(rawQuery: string, rawMarket: string, cursor?: string, mediaType: CatalogMediaType = 'games'): Promise<CatalogSearchResult> {
     const query = rawQuery.trim();
     if (query.length < 2) throw new Error('Enter at least two characters to search Microsoft Store.');
     if (query.length > 100) throw new Error('The Store search is limited to 100 characters.');
     if (cursor && (cursor.length > 4096 || !/^[A-Za-z0-9+/=_-]+$/.test(cursor))) throw new Error('The Store paging cursor is invalid.');
     const market = normalizeMarket(rawMarket);
-    const cacheKey = `${market}\u0000${query.toLowerCase()}\u0000${cursor ?? ''}`;
+    const cacheKey = `${market}\u0000${mediaType}\u0000${query.toLowerCase()}\u0000${cursor ?? ''}`;
     const cached = this.cache.get(cacheKey);
     if (cached && cached.expires > Date.now()) return structuredClone(cached.value);
 
     const searchUrl = new URL('https://apps.microsoft.com/api/products/search');
-    for (const [key, value] of Object.entries({ query, mediaType: 'games', age: 'all', price: 'all', category: 'all', subscription: 'all', gl: market, hl: 'en-us' })) {
+    for (const [key, value] of Object.entries({ query, mediaType, age: 'all', price: 'all', category: 'all', subscription: 'all', gl: market, hl: 'en-us' })) {
       searchUrl.searchParams.set(key, value);
     }
     if (cursor) searchUrl.searchParams.set('cursor', cursor);
     const searchResponse = await this.fetcher(searchUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
     if (!searchResponse.ok) throw new Error(`Microsoft Store search returned HTTP ${searchResponse.status}.`);
     const search = await searchResponse.json() as StoreSearchResponse;
-    const value = await this.result(search, query, market, true);
+    const value = await this.result(search, query, market, true, mediaType);
     this.cache.set(cacheKey, { expires: Date.now() + CACHE_TTL_MS, value });
     return structuredClone(value);
   }
 
-  async featured(rawMarket: string): Promise<CatalogSearchResult> {
+  async featured(rawMarket: string, mediaType: CatalogMediaType = 'games', cursor?: string): Promise<CatalogSearchResult> {
     const market = normalizeMarket(rawMarket);
-    const cacheKey = `${market}\u0000featured`;
+    if (cursor && (cursor.length > 4096 || !/^[A-Za-z0-9+/=_-]+$/.test(cursor))) throw new Error('The Store paging cursor is invalid.');
+    const cacheKey = `${market}\u0000featured\u0000${mediaType}\u0000${cursor ?? ''}`;
     const cached = this.cache.get(cacheKey);
     if (cached && cached.expires > Date.now()) return structuredClone(cached.value);
     const url = new URL('https://apps.microsoft.com/api/Reco/GetComputedProductsList');
     for (const [key, value] of Object.entries({
-      listName: 'TopTrending', pgNo: '1', noItems: '12', filteredCategories: 'AllProducts',
-      mediaType: 'Games', gl: market, hl: 'en-us', exp: '0',
+      listName: mediaType === 'apps' ? 'TopFreeApps' : 'TopTrending', pgNo: '1', noItems: mediaType === 'apps' ? '24' : '100', filteredCategories: 'AllProducts',
+      mediaType: mediaType === 'apps' ? 'Apps' : 'Games', gl: market, hl: 'en-us', exp: '0',
     })) url.searchParams.set(key, value);
+    if (cursor) url.searchParams.set('cursor', cursor);
     const response = await this.fetcher(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
     if (!response.ok) throw new Error(`Microsoft Store featured collection returned HTTP ${response.status}.`);
     const search = await response.json() as StoreSearchResponse & { title?: unknown };
-    const value = await this.result(search, string(search.title) ?? 'Trending games', market, false);
+    const value = await this.result(search, string(search.title) ?? (mediaType === 'apps' ? 'Trending apps' : 'Trending games'), market, true, mediaType);
     this.cache.set(cacheKey, { expires: Date.now() + CACHE_TTL_MS, value });
     return structuredClone(value);
   }

@@ -259,7 +259,16 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .catalog-card-install:disabled { opacity: .42; cursor: not-allowed; }
 .catalog-card-install svg { width: 14px; height: 14px; }
 .load-more { padding: 24px 0 4px; display: flex; justify-content: center; }
+.back-to-top { position: fixed; z-index: 25; right: 24px; bottom: 24px; width: 44px; height: 44px; display: grid; place-items: center; color: #f4f5f6; background: #387c32; border: 1px solid rgba(255,255,255,.28); border-radius: 50%; box-shadow: 0 5px 18px rgba(0,0,0,.4); cursor: pointer; }
+.back-to-top:hover { background: #46933d; }
+.back-to-top svg { width: 19px; height: 19px; }
+.store-feed-page + .store-feed-page { margin-top: 30px; padding-top: 24px; border-top: 1px solid var(--line); }
 .featured-catalog { margin-top: 4px; }
+.store-feed-controls { display: flex; align-items: end; justify-content: space-between; gap: 20px; margin-bottom: 16px; }
+.store-budget-control { width: min(240px, 30%); min-width: 170px; display: grid; gap: 7px; color: #c7c9cc; font-size: 10px; }
+.store-budget-control > span { display: flex; justify-content: space-between; align-items: center; }
+.store-budget-control strong { color: #f2f3f4; font-size: 12px; font-variant-numeric: tabular-nums; }
+.store-budget-control input { width: 100%; accent-color: var(--green); }
 .catalog-loading { min-height: 260px; display: flex; align-items: center; justify-content: center; gap: 10px; border: 1px dashed #454a50; color: var(--muted); font-size: 10px; }
 .catalog-loading svg { width: 18px; color: var(--green); }
 .catalog-empty { min-height: 300px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; border: 1px dashed #454a50; }
@@ -267,6 +276,11 @@ button.primary svg, button.secondary svg { width: 17px; height: 17px; }
 .catalog-empty h2 { margin: 16px 0 7px; font-size: 19px; }
 .catalog-empty p { max-width: 580px; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .empty-state.compact { min-height: 240px; }
+
+@media (max-width: 720px) {
+  .store-feed-controls { align-items: stretch; flex-direction: column; gap: 12px; }
+  .store-budget-control { width: 100%; min-width: 0; }
+}
 
 .manual-install { padding: 18px; display: grid; grid-template-columns: minmax(160px,.55fr) minmax(170px,.8fr) minmax(270px,1.4fr) auto; align-items: end; gap: 10px; border: 1px solid var(--line); background: #222529; }
 .manual-install label { display: grid; gap: 7px; color: #cdd0d4; font-size: 9px; }

@@ -32,6 +32,8 @@ for supported games.
 
 Download the latest x86_64 Linux AppImage from [Releases](https://github.com/domsvoboda/xodus-nexus/releases), make it executable and open it.
 
+To build a local Flatpak bundle from source, install `flatpak` and `flatpak-builder`, then run `npm run dist:flatpak`. The bundle is written to `release/`. Flatpak support is experimental; sandbox permissions can limit access to game folders and desktop integrations, and Flatpak Steam is not supported.
+
 For an application-menu installation on supported distributions:
 
 ```sh

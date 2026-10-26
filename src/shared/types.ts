@@ -284,6 +284,9 @@ export interface CatalogProduct {
   storeUrl?: string;
   categories: string[];
   purchasePrice?: string;
+  priceType?: 'paid' | 'free' | 'free-to-play' | 'included';
+  isGamePass?: boolean;
+  isApp?: boolean;
   includedWith?: string;
   releaseDate?: string;
   averageRating?: number;
@@ -382,9 +385,10 @@ export interface LauncherApi {
   saveDiagnosticReport(content: string): Promise<boolean>;
   login(): Promise<void>;
   logout(): Promise<void>;
-  searchCatalog(query: string, cursor?: string): Promise<CatalogSearchResult>;
-  getFeaturedCatalog(): Promise<CatalogSearchResult>;
+  searchCatalog(query: string, cursor?: string, mediaType?: 'games' | 'apps'): Promise<CatalogSearchResult>;
+  getFeaturedCatalog(mediaType?: 'games' | 'apps', cursor?: string): Promise<CatalogSearchResult>;
   getAccountLibrary(kind: AccountLibraryPage['kind'], cursor?: string, refresh?: boolean): Promise<AccountLibraryPage>;
+  getAccountAccess(): Promise<Record<string, LibraryAccess>>;
   startInstall(request: InstallRequest): Promise<string>;
   getInstallPlan(productId: string): Promise<InstallPlan>;
   getGameContent(id: string): Promise<GameContentPlan>;

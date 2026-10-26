@@ -1,8 +1,17 @@
 import { expect, it } from 'vitest';
-import { defaultLibraryFilters, loadLibraryFilters, saveLibraryFilters, libraryProductMatchesPlayState } from './library-preferences';
+import { defaultLibraryFilters, loadLibraryFilters, saveLibraryFilters, libraryProductMatchesPlayState, shouldFillLibraryPage } from './library-preferences';
+
+it('fills the initial account library to 21 visible games when more pages exist', () => {
+  expect(shouldFillLibraryPage(5, true, false, false)).toBe(true);
+  expect(shouldFillLibraryPage(20, true, false, false)).toBe(true);
+  expect(shouldFillLibraryPage(21, true, false, false)).toBe(false);
+  expect(shouldFillLibraryPage(5, false, false, false)).toBe(false);
+  expect(shouldFillLibraryPage(5, true, true, false)).toBe(false);
+  expect(shouldFillLibraryPage(5, true, false, true)).toBe(false);
+});
 
 it.each(['supported', 'unsupported', 'unknown'] as const)('Ready to install only includes supported packages (%s)', installability => {
-  expect(libraryProductMatchesPlayState({ installability }, 'all')).toBe(true);
+  expect(libraryProductMatchesPlayState({ installability }, 'all')).toBe(installability === 'supported');
   expect(libraryProductMatchesPlayState({ installability }, 'installed')).toBe(false);
   expect(libraryProductMatchesPlayState({ installability }, 'installable')).toBe(installability === 'supported');
 });

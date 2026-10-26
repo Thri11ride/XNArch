@@ -1185,9 +1185,10 @@ function registerDemoIpc(catalogMarket: () => string): void {
   ipcMain.handle('save-diagnostic-report', (_event, content: unknown) => saveReviewedReport(content));
   ipcMain.handle('login', () => {});
   ipcMain.handle('logout', () => {});
-  ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => catalog.search(query, catalogMarket(), cursor));
-  ipcMain.handle('catalog-featured', () => catalog.featured(catalogMarket()));
+  ipcMain.handle('catalog-search', (_event, query: string, cursor?: string, mediaType?: 'games' | 'apps') => catalog.search(query, catalogMarket(), cursor, mediaType));
+  ipcMain.handle('catalog-featured', (_event, mediaType?: 'games' | 'apps', cursor?: string) => catalog.featured(catalogMarket(), mediaType, cursor));
   ipcMain.handle('account-library', (_event, kind: 'all' | 'owned' | 'gamepass') => demoAccountLibrary(kind, demoArtwork));
+  ipcMain.handle('account-library-access', () => demoAccountLibrary('all', demoArtwork).accessByProductId);
   ipcMain.handle('start-install', () => 'demo-download');
   ipcMain.handle('install-plan', () => { throw Error('Package selection is unavailable in demo mode.'); });
   ipcMain.handle('game-content', (_event, id: string) => ({ gameId: id, checkedAt: new Date().toISOString(), items: [] }));
@@ -1307,13 +1308,18 @@ function registerIpc(): void {
   });
   ipcMain.handle('login', () => requestAuth('login'));
   ipcMain.handle('logout', () => requestAuth('logout'));
-  ipcMain.handle('catalog-search', (_event, query: string, cursor?: string) => {
-    return catalog.search(query, catalogMarket(), cursor);
+  ipcMain.handle('catalog-search', (_event, query: string, cursor?: string, mediaType?: 'games' | 'apps') => {
+    return catalog.search(query, catalogMarket(), cursor, mediaType);
   });
   ipcMain.handle('account-library', (_event, kind: 'all' | 'owned' | 'gamepass', cursor?: string, refresh = false) => {
     if (authState.running || authState.stored !== true) throw Error('Finish signing in before loading account games.');
     accountLibrary.select(authState.username, backend.current.capabilities.library ? backend.current.binaryPath : undefined, currentMarket());
     return accountLibrary.get(kind, cursor, refresh);
+  });
+  ipcMain.handle('account-library-access', async () => {
+    if (authState.running || authState.stored !== true) throw Error('Finish signing in before loading account games.');
+    accountLibrary.select(authState.username, backend.current.capabilities.library ? backend.current.binaryPath : undefined, currentMarket());
+    return (await accountLibrary.access()).accessByProductId;
   });
   ipcMain.handle('read-backend-diagnostic-log', () => backendDiagnostics.read());
   ipcMain.handle('create-diagnostic-report', async (_event, gameId?: string) => {
@@ -1325,7 +1331,7 @@ function registerIpc(): void {
     });
   });
   ipcMain.handle('save-diagnostic-report', (_event, content: unknown) => saveReviewedReport(content));
-  ipcMain.handle('catalog-featured', () => catalog.featured(catalogMarket()));
+  ipcMain.handle('catalog-featured', (_event, mediaType?: 'games' | 'apps', cursor?: string) => catalog.featured(catalogMarket(), mediaType, cursor));
   ipcMain.handle('start-install', (_event, request: InstallRequest) => startInstall(request));
   ipcMain.handle('install-plan', async (_event, raw: string) => {
     const binary = requireBackend('streaming');

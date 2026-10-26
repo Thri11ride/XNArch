@@ -3,12 +3,12 @@
   "version": "0.3.12",
   "description": "Xbox-inspired Microsoft Store game launcher for Linux",
   "license": "MIT",
-  "author": "Xodus Nexus contributors",
+  "author": "Thri11ride",
   "type": "module",
   "main": "dist-electron/main/index.js",
   "scripts": {
     "dev": "concurrently -k \"vite\" \"npm:dev:electron\"",
-    "dev:electron": "wait-on tcp:5173 && tsc -p tsconfig.electron.json && VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "dev:electron": "wait-on tcp:5173 && tsc -p tsconfig.electron.json && VITE_DEV_SERVER_URL=http://localhost:5173 ELECTRON_OZONE_PLATFORM_HINT=x11 electron . --ozone-platform=x11 --disable-gpu",
     "clean": "node -e \"for (const p of ['dist','dist-electron']) require('node:fs').rmSync(p,{recursive:true,force:true})\"",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
     "test": "vitest run",
@@ -16,6 +16,7 @@
     "test:ci-tools": "node --test scripts/ci/*.test.mjs",
     "build": "npm run clean && npm run typecheck && npm run test && vite build && tsc -p tsconfig.electron.json",
     "dist": "npm run build && electron-builder --linux AppImage --publish never",
+    "dist:flatpak": "npm run build && electron-builder --linux flatpak --publish never",
     "pack": "npm run build && electron-builder --linux dir --publish never"
   },
   "dependencies": {
@@ -58,6 +59,26 @@
       "icon": "assets/icon.png",
       "target": [
         "AppImage"
+      ]
+    },
+    "flatpak": {
+      "runtime": "org.freedesktop.Platform",
+      "runtimeVersion": "24.08",
+      "sdk": "org.freedesktop.Sdk",
+      "base": "org.electronjs.Electron2.BaseApp",
+      "baseVersion": "24.08",
+      "branch": "stable",
+      "finishArgs": [
+        "--socket=wayland",
+        "--socket=x11",
+        "--share=ipc",
+        "--device=dri",
+        "--socket=pulseaudio",
+        "--filesystem=home",
+        "--share=network",
+        "--talk-name=org.freedesktop.Notifications",
+        "--talk-name=org.freedesktop.secrets",
+        "--talk-name=org.kde.kwalletd6"
       ]
     }
   },

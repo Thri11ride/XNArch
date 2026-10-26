@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
-  ArrowDownToLine, Check, ChevronRight, CircleAlert, CircleUserRound,
+  ArrowDownToLine, ArrowUp, Check, ChevronRight, CircleAlert, CircleUserRound,
   Clock3, Cog, Download, FolderOpen, Gamepad2, Github, HardDrive, Home, Library,
   LoaderCircle, LogIn, MoreHorizontal, PackageCheck, Pause, Play, Plus, RefreshCw, Rocket, Search, Settings2,
   Store, Terminal, Trash2, X,
@@ -12,7 +12,7 @@ import { subscriptionBadge } from '../shared/subscription';
 import { defaultLaunchTools, normalizeLaunchTools } from '../shared/launch-tools';
 import type { GameLaunchTools } from '../shared/types';
 import { catalogInstallRequest, PackageInstallProvider, usePackageInstall } from './PackageInstall';
-import { defaultLibraryFilters, loadLibraryFilters, saveLibraryFilters, libraryProductMatchesPlayState, type LibraryFilters } from './library-preferences';
+import { defaultLibraryFilters, loadLibraryFilters, saveLibraryFilters, libraryProductMatchesPlayState, shouldFillLibraryPage, type LibraryFilters } from './library-preferences';
 import { InstallQueueShortcut } from './InstallQueueShortcut';
 import { GamepadNavigation } from './GamepadNavigation';
 import { ConfirmationProvider, useConfirmation } from './Confirmation';
@@ -23,7 +23,10 @@ import { DownloadCancelDialog } from './DownloadCancelDialog';
 import { KeyringSetup } from './KeyringSetup';
 import { DiagnosticReportButton } from './DiagnosticReport';
 import type { DownloadCancelOptions } from '../shared/types';
+import { buildInterestQueries, consolidateStoreProducts, matchesBudget, recommendedProducts, shouldFillStorePage, splitStoreFeedPages, storeFeedHasMore, supportedGamePassProducts, STORE_BUDGET_UNLIMITED, STORE_FEED_PAGE_SIZE, type StoreFeedMode } from './store-recommendations';
 export type { LibraryFilters } from './library-preferences';
+
+type StoreSearchPage = CatalogSearchResult & { mediaType: 'games' };
 
 const emptySnapshot: AppSnapshot = {
   backend: {
@@ -221,21 +224,51 @@ export function HomePage({ data, go, action }: {
   </main>;
 }
 
+export function visibleCatalogProducts<T extends { installability: 'supported' | 'unsupported' | 'unknown' }>(products: T[]) {
+  return products.filter((product) => product.installability === 'supported');
+}
+
+const storeFeedModes: { id: StoreFeedMode; label: string }[] = [
+  { id: 'recommended', label: 'Recommended' },
+  { id: 'games', label: 'Games' },
+  { id: 'gamepass', label: 'Game Pass' },
+];
+
+function parseCatalogPrice(rawPrice?: string): number | undefined {
+  if (!rawPrice) return undefined;
+  if (/^(free|free-to-play)$/i.test(rawPrice.trim())) return 0;
+  const normalized = rawPrice.replace(/[^0-9.,]/g, '').replace(/,/g, '.');
+  const match = normalized.match(/\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const value = Number(match[0]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function productMatchesFeedMode(product: CatalogProduct, mode: StoreFeedMode, gamePassIds: ReadonlySet<string>, budgetMaximum: number): boolean {
+  if (product.installability !== 'supported') return false;
+  const isGamePass = gamePassIds.has(product.productId.toUpperCase()) || Boolean(product.installProductId && gamePassIds.has(product.installProductId.toUpperCase()));
+  if (mode === 'gamepass') return isGamePass;
+  if (!matchesBudget(parseCatalogPrice(product.purchasePrice), budgetMaximum, isGamePass)) return false;
+  if (mode === 'recommended' || mode === 'games') return true;
+  return false;
+}
+
 function CatalogSupportBadge({ product }: { product: CatalogProduct }) {
   return <span className={`catalog-support ${product.installability}`} title={product.supportNote}
     aria-label={product.installability === 'unknown' ? 'Package support unknown' : undefined}>{product.installability === 'supported' ? 'PC' : product.installability === 'unknown' ? '?' : 'Unsupported'}</span>;
 }
 
 export function StoreProductCard({ product, selected, disabled, label, select, install }: {
-  product: CatalogProduct; selected: boolean; disabled: boolean; label: string;
+  product: CatalogProduct & { isGamePass?: boolean }; selected: boolean; disabled: boolean; label: string;
   select: (product: CatalogProduct) => void; install: (product: CatalogProduct) => void;
 }) {
+  const priceAndAccess = `${product.purchasePrice ?? (product.isGamePass ? 'Price not listed' : '')}${product.isGamePass ? ' · Game Pass' : ''}`;
   return <article className={`catalog-card ${selected ? 'selected' : ''}`} data-gamepad-card>
     <button className="catalog-card-main" data-gamepad-auto-select="focus" data-gamepad-card-activate
       onFocus={() => select(product)} onClick={() => select(product)}>
       {product.posterUrl ? <img src={product.posterUrl} alt={`${product.title} cover`} /> : <div className="catalog-cover-placeholder"><Gamepad2 /></div>}
       <CatalogSupportBadge product={product} />
-      <div><GameTitle title={product.title} /><small>{product.publisher ?? product.productId}</small><span>{product.purchasePrice ?? 'Price unavailable'}{product.includedWith ? ` · ${product.includedWith}` : ''}</span></div>
+      <div><GameTitle title={product.title} /><small>{product.publisher ?? product.productId}</small><span>{priceAndAccess}</span></div>
     </button>
     <button className="catalog-card-install" data-gamepad-skip data-gamepad-card-action disabled={disabled} onClick={() => install(product)}>
       {label === 'Preparing…' ? <LoaderCircle className="spin" /> : label === 'Installed' ? <Check /> : <Download />}{label}
@@ -246,7 +279,14 @@ export function StoreProductCard({ product, selected, disabled, label, select, i
 function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast: (value: Toast) => void; go: (page: Page) => void; initialQuery: string }) {
   const startPackageInstall = usePackageInstall();
   const [catalog, setCatalog] = useState<CatalogSearchResult>();
+  const [catalogPageIds, setCatalogPageIds] = useState<string[][]>([]);
   const [featured, setFeatured] = useState<CatalogSearchResult>();
+  const [recommendationCandidates, setRecommendationCandidates] = useState<CatalogProduct[]>([]);
+  const [recommendationSearches, setRecommendationSearches] = useState<StoreSearchPage[]>([]);
+  const [initialFeedIds, setInitialFeedIds] = useState<string[]>([]);
+  const [loadedFeedPageIds, setLoadedFeedPageIds] = useState<string[][]>([]);
+  const [licensedProducts, setLicensedProducts] = useState<AccountLibraryPage['products']>([]);
+  const [licensedProductIds, setLicensedProductIds] = useState<string[]>([]);
   const [featuredLoading, setFeaturedLoading] = useState(true);
   const [featuredError, setFeaturedError] = useState<string>();
   const [selected, setSelected] = useState<CatalogProduct>();
@@ -255,23 +295,94 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
   const [manualTitle, setManualTitle] = useState('');
   const [destination, setDestination] = useState(data.settings.installRoot);
   const [busy, setBusy] = useState<string>();
+  const [feedMode, setFeedMode] = useState<StoreFeedMode>('recommended');
+  const [budgetMaximum, setBudgetMaximum] = useState(20);
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const [pageScrollElement, setPageScrollElement] = useState<HTMLElement>();
+  const storePageRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const scrollElement = storePageRef.current?.closest<HTMLElement>('.page-scroll') ?? undefined;
+    setPageScrollElement(scrollElement);
+    if (!scrollElement) return;
+    const updateVisibility = () => setShowBackToTop(scrollElement.scrollTop > 120);
+    scrollElement.addEventListener('scroll', updateVisibility, { passive: true });
+    updateVisibility();
+    return () => scrollElement.removeEventListener('scroll', updateVisibility);
+  }, []);
   useEffect(() => { if (!selected) setDestination(data.settings.installRoot); }, [data.settings.installRoot, selected]);
   useEffect(() => {
     if (initialQuery.trim().length < 2) return;
     let cancelled = false;
     window.launcher.searchCatalog(initialQuery).then((result) => {
-      if (!cancelled) { setCatalog(result); setSelected(undefined); }
+      if (!cancelled) {
+        setCatalog(result);
+        setCatalogPageIds([result.products.map((product) => product.productId)]);
+        setSelected(undefined);
+      }
     }).catch((error) => { if (!cancelled) toast({ kind: 'error', message: errorMessage(error) }); });
     return () => { cancelled = true; };
   }, [initialQuery]);
   useEffect(() => {
     let cancelled = false;
-    window.launcher.getFeaturedCatalog()
-      .then((result) => { if (!cancelled) setFeatured(result); })
-      .catch((error) => { if (!cancelled) setFeaturedError(errorMessage(error)); })
-      .finally(() => { if (!cancelled) setFeaturedLoading(false); });
+    setFeaturedLoading(true);
+    setFeaturedError(undefined);
+    setRecommendationCandidates([]);
+    setRecommendationSearches([]);
+    setInitialFeedIds([]);
+    setLoadedFeedPageIds([]);
+    setLicensedProducts([]);
+    setLicensedProductIds([]);
+    async function loadRecommendations() {
+      const [gamesResult] = await Promise.allSettled([window.launcher.getFeaturedCatalog('games')]);
+      const games = gamesResult.status === 'fulfilled' ? gamesResult.value : undefined;
+      if (cancelled) return;
+      setFeatured(games);
+      if (!games) setFeaturedError(errorMessage(gamesResult.status === 'rejected' ? gamesResult.reason : 'Store recommendations are unavailable.'));
+
+      let licensed: AccountLibraryPage['products'] = [];
+      let licensedIds: string[] = [];
+      if (data.auth.stored === true && !data.auth.running && data.backend.capabilities.library) {
+        try {
+          licensedIds = Object.keys(await window.launcher.getAccountAccess());
+          let page = await window.launcher.getAccountLibrary('gamepass');
+          licensed = page.products;
+          const cursors = new Set<string>();
+          while (page.cursor && !cursors.has(page.cursor)) {
+            cursors.add(page.cursor);
+            page = await window.launcher.getAccountLibrary('gamepass', page.cursor);
+            licensed.push(...page.products);
+          }
+        } catch {
+          licensed = [];
+        }
+      }
+      if (cancelled) return;
+      setLicensedProducts(licensed);
+      setLicensedProductIds(licensedIds);
+
+      const queries = buildInterestQueries(licensed);
+      const gameBrowseQueries = ['Action games', 'Adventure games', 'Role-playing games', 'Racing games', 'Strategy games', 'Simulation games', 'Sports games', 'Shooter games'];
+      const gameQueries = [...new Set([...queries, ...gameBrowseQueries])];
+      const discovered = await Promise.all(gameQueries.map(async (query) => {
+        try { return { ...(await window.launcher.searchCatalog(query, undefined, 'games')), mediaType: 'games' as const }; }
+        catch { return undefined; }
+      }));
+      if (cancelled) return;
+      const searchPages = discovered.filter((result): result is StoreSearchPage => Boolean(result));
+      setRecommendationSearches(searchPages);
+      const candidates = [...searchPages.flatMap((result) => result.products), ...(games?.products ?? [])];
+      setRecommendationCandidates(candidates);
+      setInitialFeedIds([...new Set([...candidates, ...licensed].map((product) => product.productId.toUpperCase()))]);
+      setFeaturedLoading(false);
+    }
+    void loadRecommendations().catch((error) => {
+      if (!cancelled) {
+        setFeaturedError(errorMessage(error));
+        setFeaturedLoading(false);
+      }
+    });
     return () => { cancelled = true; };
-  }, []);
+  }, [data.auth.stored, data.auth.running, data.backend.capabilities.library, data.backend.binaryPath, data.settings.market]);
 
   function installDestination(product: CatalogProduct): string {
     const folder = product.title.normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 80) || product.productId;
@@ -283,12 +394,83 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
     setDestination(installDestination(product));
   }
 
-  async function loadMore() {
-    if (!catalog?.cursor) return;
+  async function loadMore(fillFirstPage = false) {
+    const wantGames = feedMode !== 'gamepass';
+    const wantSearches = feedMode !== 'gamepass';
+    const relevantSearches = recommendationSearches.filter((result) =>
+      (feedMode === 'games' || feedMode === 'recommended') && result.mediaType === 'games');
+    const hasFeedMore = (wantGames && Boolean(featured?.cursor)) || (wantSearches && relevantSearches.some((result) => result.cursor));
+    if (!catalog?.cursor && !hasFeedMore) return;
     setLoadingMore(true);
     try {
-      const next = await window.launcher.searchCatalog(catalog.query, catalog.cursor);
-      setCatalog({ ...next, products: [...catalog.products, ...next.products] });
+      if (catalog?.cursor) {
+        const next = await window.launcher.searchCatalog(catalog.query, catalog.cursor);
+        setCatalog((current) => current ? { ...next, products: [...current.products, ...next.products] } : next);
+        setCatalogPageIds((pages) => [...pages, next.products.map((product) => product.productId)]);
+      } else {
+        let currentFeatured = featured;
+        let currentSearches = recommendationSearches;
+        let collected: CatalogProduct[] = [];
+        const oldVisibleIds = new Set(visibleFeatured.map((product) => product.productId.toUpperCase()));
+        const seenVisibleIds = new Set(oldVisibleIds);
+        const fetchedCursors = new Set<string>();
+        const gamePassProducts = supportedGamePassProducts(licensedProducts);
+        const gamePassIds = new Set(gamePassProducts.flatMap((product) => [product.productId, product.installProductId]
+          .filter((id): id is string => Boolean(id)).map((id) => id.toUpperCase())));
+
+        for (let round = 0; round < 30; round += 1) {
+          const pendingSearches = wantSearches ? relevantSearches.map((search) =>
+            currentSearches.find((current) => current.query === search.query && current.mediaType === search.mediaType) ?? search)
+            .filter((search) => search.cursor && !fetchedCursors.has(`${search.query}:${search.cursor}`)) : [];
+          const featuredCursor = wantGames ? currentFeatured?.cursor : undefined;
+          if (!featuredCursor && !pendingSearches.length) break;
+
+          const featuredRequest = featuredCursor && !fetchedCursors.has(`featured:${featuredCursor}`)
+            ? window.launcher.getFeaturedCatalog('games', featuredCursor).catch(() => undefined)
+            : Promise.resolve(undefined);
+          if (featuredCursor) fetchedCursors.add(`featured:${featuredCursor}`);
+          const searchRequests = await Promise.all([
+            featuredRequest,
+            ...pendingSearches.map(async (search) => {
+              const cursor = search.cursor!;
+              fetchedCursors.add(`${search.query}:${cursor}`);
+              try { return { ...(await window.launcher.searchCatalog(search.query, cursor, search.mediaType)), mediaType: search.mediaType }; }
+              catch { return undefined; }
+            }),
+          ]);
+          const nextGames = searchRequests[0];
+          const nextSearchPages = searchRequests.slice(1) as Array<StoreSearchPage | undefined>;
+          if (nextGames) {
+            currentFeatured = currentFeatured ? { ...nextGames, products: [...currentFeatured.products, ...nextGames.products] } : nextGames;
+            collected.push(...nextGames.products);
+          }
+          currentSearches = currentSearches.map((current) => {
+            const index = pendingSearches.findIndex((search) => search.query === current.query && search.mediaType === current.mediaType);
+            const next = index >= 0 ? nextSearchPages[index] : undefined;
+            if (!next) return current;
+            collected.push(...next.products);
+            return { ...next, products: [...current.products, ...next.products] };
+          });
+
+          const candidateProducts = visibleCatalogProducts(consolidateStoreProducts([...visibleFeatured, ...collected], gamePassProducts))
+            .filter((product) => productMatchesFeedMode(product, feedMode, gamePassIds, budgetMaximum));
+          for (const product of candidateProducts) {
+            const id = product.productId.toUpperCase();
+            if (!oldVisibleIds.has(id)) seenVisibleIds.add(id);
+          }
+          if (seenVisibleIds.size - oldVisibleIds.size >= STORE_FEED_PAGE_SIZE) break;
+          if (!nextGames && nextSearchPages.every((page) => !page)) break;
+        }
+
+        setFeatured(currentFeatured);
+        setRecommendationSearches(currentSearches);
+        setRecommendationCandidates([...currentSearches.flatMap((result) => result.products), ...(currentFeatured?.products ?? [])]);
+        const nextPageIds = [...seenVisibleIds].filter((id) => !oldVisibleIds.has(id));
+        if (nextPageIds.length) {
+          if (fillFirstPage) setInitialFeedIds((ids) => [...new Set([...ids, ...nextPageIds])]);
+          else setLoadedFeedPageIds((pages) => [...pages, nextPageIds]);
+        }
+      }
     } catch (error) { toast({ kind: 'error', message: errorMessage(error) }); }
     finally { setLoadingMore(false); }
   }
@@ -321,26 +503,70 @@ function StorePage({ data, toast, go, initialQuery }: { data: AppSnapshot; toast
   const isInstalled = (product: CatalogProduct) => installedIds.has(product.productId) || Boolean(product.installProductId && installedIds.has(product.installProductId));
   const queuedIds = new Set(data.downloads.filter(task => ['running', 'queued', 'paused'].includes(task.status)).map(task => task.productId.toUpperCase()));
   const isQueued = (product: CatalogProduct) => queuedIds.has(product.productId) || Boolean(product.installProductId && queuedIds.has(product.installProductId));
-  const productGrid = (products: CatalogProduct[]) => <div className="catalog-grid" data-gamepad-grid>{products.map((product) => {
-    const installed = isInstalled(product);
-    return <StoreProductCard key={product.productId} product={product} selected={selected?.productId === product.productId}
-      disabled={product.installability !== 'supported' || Boolean(busy) || !data.backend.capabilities.streaming || installed || isQueued(product)}
-      label={installed ? 'Installed' : isQueued(product) ? 'In Install Queue' : busy === product.productId ? 'Preparing…' : 'Install'}
-      select={selectProduct} install={install} />;
-  })}</div>;
-  return <main className="page store-page">
+  const productGrid = (products: CatalogProduct[]) => {
+    const visibleProducts = visibleCatalogProducts(products);
+    return <div className="catalog-grid" data-gamepad-grid>{visibleProducts.map((product) => {
+      const installed = isInstalled(product);
+      return <StoreProductCard key={product.productId} product={product} selected={selected?.productId === product.productId}
+        disabled={product.installability !== 'supported' || Boolean(busy) || !data.backend.capabilities.streaming || installed || isQueued(product)}
+        label={installed ? 'Installed' : isQueued(product) ? 'In Install Queue' : busy === product.productId ? 'Preparing…' : 'Install'}
+        select={selectProduct} install={install} />;
+    })}</div>;
+  };
+  const featuredPool = useMemo(() => {
+    const gamePassProducts = supportedGamePassProducts(licensedProducts);
+    const gamePassIds = new Set(gamePassProducts.flatMap((product) => [product.productId, product.installProductId].filter((id): id is string => Boolean(id)).map((id) => id.toUpperCase())));
+    const base = feedMode === 'recommended' ? [...recommendedProducts(recommendationCandidates, licensedProducts,
+      data.games.flatMap((game) => [game.storeId, game.offerProductId].filter((id): id is string => Boolean(id))), licensedProductIds)
+      , ...gamePassProducts]
+      : feedMode === 'games' ? [...recommendationCandidates, ...gamePassProducts]
+      : feedMode === 'gamepass' ? gamePassProducts
+      : [...(featured?.products ?? []), ...gamePassProducts];
+    const filtered = visibleCatalogProducts(consolidateStoreProducts(base, gamePassProducts))
+      .filter((product) => productMatchesFeedMode(product, feedMode, gamePassIds, budgetMaximum));
+    return filtered;
+  }, [featured, recommendationCandidates, licensedProducts, licensedProductIds, data.games, feedMode, budgetMaximum]);
+  const visibleFeedPages = splitStoreFeedPages(featuredPool, initialFeedIds, loadedFeedPageIds);
+  const visibleFeatured = visibleFeedPages.flat();
+  const visibleCatalogPages = catalog ? splitStoreFeedPages(catalog.products, catalogPageIds[0] ?? [], catalogPageIds.slice(1)) : [];
+  const feedHasMore = storeFeedHasMore(feedMode, {
+    games: Boolean(featured?.cursor),
+    searches: recommendationSearches.some((result) => result.cursor && (feedMode !== 'gamepass')),
+  });
+  const currentFirstPageCount = visibleFeedPages[0]?.length ?? 0;
+  useEffect(() => {
+    if (catalog || featuredLoading || loadingMore || !shouldFillStorePage(currentFirstPageCount, feedHasMore)) return;
+    void loadMore(true);
+  }, [catalog, featuredLoading, loadingMore, currentFirstPageCount, feedHasMore, feedMode, budgetMaximum]);
+  return <main ref={storePageRef} className="page store-page">
     <header className="page-header"><div><h1>Store</h1></div><span className="catalog-source"><StatusDot />Microsoft Store</span></header>
-    {!catalog ? <section className="featured-catalog"><SectionTitle title="Featured" />{featuredLoading ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>Loading live Store collection…</span></div> : featured?.products.length ? <><div className="featured-rail">{featured.products.slice(0, 3).map((product) => <button className="featured-tile" key={product.productId} onClick={() => selectProduct(product)}>{product.heroUrl || product.posterUrl ? <img src={product.heroUrl ?? product.posterUrl} alt="" /> : <div className="featured-tile-placeholder"><Gamepad2 /></div>}<span className="featured-tile-copy"><GameTitle title={product.title} /><small>{product.publisher ?? 'Microsoft Store'} · {product.installability === 'supported' ? 'PC package verified' : 'Check package support'}</small></span></button>)}</div><SectionTitle title="Trending PC games" />{productGrid(featured.products.slice(3))}</> : <div className="catalog-empty"><Store /><h2>Featured games are temporarily unavailable</h2><p>{featuredError ?? 'Search still works with live Microsoft Store data.'}</p></div>}</section> : null}
+    {!catalog ? <section className="featured-catalog">
+      <div className="store-feed-controls">
+        <div className="catalog-filter-row">{storeFeedModes.map((mode) => <button key={mode.id} className={feedMode === mode.id ? 'primary compact' : 'secondary compact'} onClick={() => setFeedMode(mode.id)}>{mode.label}</button>)}</div>
+        {feedMode !== 'gamepass' ? <label className="store-budget-control"><span>Budget <strong>{budgetMaximum >= STORE_BUDGET_UNLIMITED ? 'No limit' : `$${budgetMaximum}`}</strong></span><input aria-label="Maximum game price" aria-valuetext={budgetMaximum >= STORE_BUDGET_UNLIMITED ? 'No limit' : `$${budgetMaximum}`} type="range" min="0" max={STORE_BUDGET_UNLIMITED} step="1" value={budgetMaximum} onChange={(event) => setBudgetMaximum(Number(event.target.value))} /></label> : null}
+      </div>
+      {featuredLoading ? <div className="catalog-loading"><LoaderCircle className="spin" /><span>Loading live Store collection…</span></div> : visibleFeatured.length ? <>
+        {visibleFeedPages.map((pageProducts, index) => <section className="store-feed-page" key={`${feedMode}-${index}`}>
+          {feedMode === 'games' || feedMode === 'gamepass' ? <SectionTitle title={index ? `More ${feedMode === 'gamepass' ? 'Game Pass' : 'games'} · ${index + 1}` : feedMode === 'gamepass' ? 'Game Pass' : 'Games'} /> : index ? <SectionTitle title={`More results · ${index + 1}`} /> : <>
+            <div className="featured-rail">{pageProducts.slice(0, 3).map((product) => <button className="featured-tile" key={product.productId} onClick={() => selectProduct(product)}>{product.heroUrl || product.posterUrl ? <img src={product.heroUrl ?? product.posterUrl} alt="" /> : <div className="featured-tile-placeholder"><Gamepad2 /></div>}<span className="featured-tile-copy"><GameTitle title={product.title} /><small>{product.publisher ?? 'Microsoft Store'}{product.purchasePrice ? ` · ${product.purchasePrice}` : product.isGamePass ? ' · Price not listed' : ''}{product.isGamePass ? ' · Game Pass' : ''}</small></span></button>)}</div>
+            <SectionTitle title={feedMode === 'recommended' ? 'Recommended' : `$${feedMode} and below`} />
+          </>}
+          {productGrid(index === 0 && feedMode !== 'games' ? pageProducts.slice(3) : pageProducts)}
+        </section>)}
+      </> : <div className="catalog-empty"><Store /><h2>{feedMode === 'gamepass' ? 'No supported Game Pass games found' : 'Featured games are temporarily unavailable'}</h2><p>{feedMode === 'gamepass' ? data.auth.stored === true ? 'No Game Pass games with verified supported packages were found in this account.' : 'Sign in to view supported games from your Game Pass library.' : featuredError ?? 'Search still works with live Microsoft Store data.'}</p></div>}
+      {!featuredLoading && feedHasMore ? <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? <LoaderCircle className="spin" /> : <Plus />}Load More</button></div> : null}
+    </section> : null}
 
     {selected ? <section className={`catalog-selection ${selected.heroUrl ? 'has-art' : ''}`} style={selected.heroUrl ? { '--catalog-hero': `url(${selected.heroUrl})` } as React.CSSProperties : undefined}>
-      <div className="catalog-selection-copy"><span className="overline">SELECTED PRODUCT</span><h2>{selected.title}</h2><div className="catalog-badges">{selected.purchasePrice ? <span>{selected.purchasePrice}</span> : null}{selected.includedWith ? <span className="pass">Available with {selected.includedWith}</span> : null}<span className={selected.installability}>{selected.installability === 'supported' ? 'PC MSIXVC verified' : selected.installability}</span></div><p>{selected.description}</p><small>{selected.publisher ?? 'Publisher unavailable'} · Store ID {selected.productId}{selected.installProductId ? ` · Package ID ${selected.installProductId}` : ''}</small></div>
+      <div className="catalog-selection-copy"><span className="overline">SELECTED PRODUCT</span><h2>{selected.title}</h2><div className="catalog-badges">{selected.purchasePrice || selected.isGamePass ? <span>{selected.purchasePrice ?? 'Price not listed'}</span> : null}{selected.isGamePass ? <span className="pass">Game Pass</span> : selected.includedWith ? <span className="pass">Available with {selected.includedWith}</span> : null}<span className={selected.installability}>{selected.installability === 'supported' ? 'PC MSIXVC verified' : selected.installability}</span></div><p>{selected.description}</p><small>{selected.publisher ?? 'Publisher unavailable'} · Store ID {selected.productId}{selected.installProductId ? ` · Package ID ${selected.installProductId}` : ''}</small></div>
       <div className="catalog-install-box"><p className={selected.installability === 'supported' ? 'supported' : 'unsupported'}>{selected.supportNote}</p><label>Install location<div className="input-action"><input value={destination} onChange={(event) => setDestination(event.target.value)} /><button type="button" onClick={chooseDestination} title="Choose folder"><FolderOpen /></button></div></label><div className="button-row"><button className="primary" disabled={selected.installability !== 'supported' || Boolean(busy) || !data.backend.capabilities.streaming || isInstalled(selected) || isQueued(selected)} onClick={() => install(selected, destination)}>{busy === selected.productId ? <LoaderCircle className="spin" /> : isInstalled(selected) ? <Check /> : <ArrowDownToLine />}{isInstalled(selected) ? 'Installed' : isQueued(selected) ? 'In Install Queue' : 'Install with Xodus'}</button>{selected.storeUrl ? <button className="secondary" onClick={() => window.open(selected.storeUrl, '_blank')}>Store page</button> : null}</div></div>
     </section> : null}
 
-    {catalog ? <><SectionTitle title={`Results for “${catalog.query}”`} />{productGrid(catalog.products)}{catalog.products.length === 0 ? <div className="empty-state compact"><div><Search /></div><h2>No games found</h2><p>Try a different title or a Microsoft Store Product ID.</p></div> : null}{catalog.hasMore ? <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={loadMore}>{loadingMore ? <LoaderCircle className="spin" /> : <Plus />}Load more results</button></div> : null}</> : null}
+    {catalog ? <><SectionTitle title={`Results for “${catalog.query}”`} />{visibleCatalogPages.map((pageProducts, index) => <section className="store-feed-page" key={`search-${index}`}>{index ? <SectionTitle title={`More results · ${index + 1}`} /> : null}{productGrid(pageProducts)}</section>)}{visibleCatalogProducts(catalog.products).length === 0 ? <div className="empty-state compact"><div><Search /></div><h2>No games found</h2><p>Try a different title or a Microsoft Store Product ID.</p></div> : null}{catalog.hasMore ? <div className="load-more"><button className="secondary" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? <LoaderCircle className="spin" /> : <Plus />}Load more results</button></div> : null}</> : null}
 
     <SectionTitle title="Install by Product ID" />
     <form className="manual-install" onSubmit={manualInstall}><label>Product ID<input value={manualProductId} onChange={(event) => setManualProductId(event.target.value)} placeholder="For example: 9N4PT8HGCDHQ" required /></label><label>Queue name <em>Optional</em><input value={manualTitle} onChange={(event) => setManualTitle(event.target.value)} /></label><label>Install location<div className="input-action"><input value={destination} onChange={(event) => setDestination(event.target.value)} required /><button type="button" onClick={chooseDestination}><FolderOpen /></button></div></label><button className="secondary" disabled={Boolean(busy) || !data.backend.capabilities.streaming}>{busy === 'manual' ? <LoaderCircle className="spin" /> : <Terminal />}Install unlisted ID</button></form>
+    {showBackToTop ? <button className="back-to-top" type="button" aria-label="Back to top" title="Back to top" onClick={() => pageScrollElement?.scrollTo({ top: 0, behavior: 'smooth' })}><ArrowUp /></button> : null}
   </main>;
 }
 
@@ -453,6 +679,10 @@ export function AccountGames({ data, toast, selectedId, select, menu, filters, o
       .map(game => ({ id: game.id, title: game.title, game, product: undefined })),
     ...products.filter(product => libraryProductMatchesPlayState(product, playState)).map(product => ({ id: product.productId, title: product.title, product, game: undefined })),
   ].filter(row => row.title.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  useEffect(() => {
+    if (error || !shouldFillLibraryPage(rows.length, Boolean(visible?.cursor), Boolean(searching), playState === 'installed')) return;
+    void load();
+  }, [identity, available, busy, visible?.cursor, rows.length, searching, playState, error]);
   async function load(refresh = false) {
     setBusy(true); setError(undefined);
     try {
@@ -503,7 +733,7 @@ export function AccountGames({ data, toast, selectedId, select, menu, filters, o
       })}</div>
       {!busy && !searching && !error && !rows.length ? <p>{visible?.cursor && playState !== 'installed' ? 'No games match these filters in the loaded results. Load more to continue.' : 'No games match these filters.'}</p> : null}
       <div data-gamepad-library-footer><LibraryPagination loading={busy} hasMore={Boolean(visible?.cursor)} searching={searching} load={() => { void load(); }} />
-      <p className="account-library-note">Licensed games are listed regardless of package support. Unsupported games cannot be installed. Add-ons are excluded. Installation checks your license again.</p></div>
+      <p className="account-library-note">Unsupported packages are hidden. Add-ons are excluded. Installation checks your license again.</p></div>
     </div>
   </section>;
 }
@@ -586,9 +816,18 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
   const [contentGameId, setContentGameId] = useState<string>();
   const [detailOpen, setDetailOpen] = useState(Boolean(selection));
   const pageRef = useRef<HTMLElement>(null);
+  const [showBackToTop, setShowBackToTop] = useState(false);
   const savedScroll = useRef(0);
   const wasOpen = useRef(false);
   const selected = data.games.find((game) => game.id === selectedId) ?? data.games[0];
+  useEffect(() => {
+    const scrollElement = pageRef.current?.closest<HTMLElement>('.page-scroll');
+    if (!scrollElement) return;
+    const updateVisibility = () => setShowBackToTop(scrollElement.scrollTop > 120);
+    scrollElement.addEventListener('scroll', updateVisibility, { passive: true });
+    updateVisibility();
+    return () => scrollElement.removeEventListener('scroll', updateVisibility);
+  }, []);
   function selectGame(game: Game, openDetails = false) {
     setSelectedId(game.id);
     if (openDetails) { savedScroll.current = pageRef.current?.closest('.page-scroll')?.scrollTop ?? 0; setDetailOpen(true); }
@@ -747,6 +986,7 @@ export function LibraryPage({ data, toast, filters, onFiltersChange, selection }
       <AccountGamesForUser data={data} toast={toast} filters={filters} onFiltersChange={onFiltersChange} selectedId={selected?.id} select={selectGame} menu={openMenu} />
     </div>
     </div>
+    {showBackToTop && !detailOpen ? <button className="back-to-top" type="button" aria-label="Back to top" title="Back to top" onClick={() => pageRef.current?.closest<HTMLElement>('.page-scroll')?.scrollTo({ top: 0, behavior: 'smooth' })}><ArrowUp /></button> : null}
     {selectedPanel}
     {menu && menuGame ? <GameContextMenu x={menu.x} y={menu.y} {...managementProps(menuGame)} /> : null}
 {diagnosticLog ? <DiagnosticDialog log={diagnosticLog.log} close={() => setDiagnosticLog(undefined)} revealFile={() => window.launcher.revealDiagnosticLog(diagnosticLog.operationId)} copyLog={() => window.launcher.copyDiagnosticLog(diagnosticLog.operationId)} /> : null}

@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
-import { AccountGames, Cover, GameLaunchToolFields, GameTitle, HomePage, LibraryPagination, LibraryProductCard, StoreProductCard, Sidebar, SettingsPage, type LibraryFilters } from './App';
+import { AccountGames, Cover, GameLaunchToolFields, GameTitle, HomePage, LibraryPagination, LibraryProductCard, StoreProductCard, Sidebar, SettingsPage, visibleCatalogProducts, type LibraryFilters } from './App';
 import { defaultLaunchTools } from '../shared/launch-tools';
 import { demoSnapshot } from '../shared/demo-data';
 import type { AccountLibraryPage } from '../shared/types';
@@ -32,6 +32,28 @@ it.each(['supported', 'unsupported', 'unknown'] as const)('uses the Store %s bad
   expect(html).toContain('title="Package &lt;reason&gt;"');
   if (installability === 'unsupported') expect(html).toContain('>Unsupported</span>');
   if (installability !== 'supported') { expect(html).toContain('tabindex="0"'); expect(html).toContain('Action unavailable'); }
+});
+
+it('hides unsupported and unknown-support catalog entries from visible store listings', () => {
+  const products = [
+    { productId: 'supported-1', title: 'Visible', installability: 'supported' as const, supportNote: 'ok' },
+    { productId: 'unsupported-1', title: 'Hidden', installability: 'unsupported' as const, supportNote: 'not supported' },
+    { productId: 'unknown-1', title: 'Maybe visible', installability: 'unknown' as const, supportNote: 'need review' },
+  ];
+
+  expect(visibleCatalogProducts(products)).toEqual([
+    { productId: 'supported-1', title: 'Visible', installability: 'supported', supportNote: 'ok' },
+  ]);
+});
+
+it('shows Store price and Game Pass availability on product cards', () => {
+  const renderCard = (isGamePass: boolean, purchasePrice?: string) => renderToStaticMarkup(<StoreProductCard
+    product={{ productId: '9AAAAAAAAAAA', title: 'Example game', description: '', categories: [], installability: 'supported', supportNote: '', purchasePrice, isGamePass }}
+    selected={false} disabled={false} label="Install" select={() => {}} install={() => {}} />);
+  expect(renderCard(true, '$19.99')).toContain('$19.99 · Game Pass');
+  expect(renderCard(false, '$19.99')).toContain('$19.99');
+  expect(renderCard(false, '$19.99')).not.toContain('Not in Game Pass');
+  expect(renderCard(true)).toContain('Price not listed · Game Pass');
 });
 
 it('keeps one My Library and Store navigation, no separate Game Pass page',()=>{

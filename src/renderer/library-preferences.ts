@@ -6,9 +6,14 @@ export interface LibraryFilters {
   query: string;
 }
 export const defaultLibraryFilters: LibraryFilters = { kind: 'all', playState: 'all', query: '' };
+export const LIBRARY_INITIAL_PAGE_SIZE = 21;
+
+export function shouldFillLibraryPage(visibleCount: number, hasMore: boolean, searching: boolean, installedOnly: boolean): boolean {
+  return visibleCount < LIBRARY_INITIAL_PAGE_SIZE && hasMore && !searching && !installedOnly;
+}
 
 export function libraryProductMatchesPlayState(product: Pick<CatalogProduct, 'installability'>, playState: LibraryFilters['playState']): boolean {
-  return playState !== 'installed' && (playState !== 'installable' || product.installability === 'supported');
+  return product.installability === 'supported' && playState !== 'installed';
 }
 const key = 'xodus-nexus.library-filters.v1';
 type Preferences = Pick<Storage, 'getItem' | 'setItem'>;

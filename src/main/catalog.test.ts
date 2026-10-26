@@ -64,7 +64,7 @@ describe('Microsoft Store catalog parsing', () => {
   });
 
   it('keeps a multi-product Store edition intact for backend package selection', () => {
-    const products = parseCatalogProducts({ productsList: [{ productId: '9edition', title: 'Game Standard Edition', isGame: true }] }, {
+    const products = parseCatalogProducts({ productsList: [{ productId: '9edition', title: 'Game Standard Edition', isGame: true, priceInfo: { displayPrice: '$9.99' } }] }, {
       Products: [{
         ProductId: '9EDITION',
         DisplaySkuAvailabilities: [{ Sku: { Properties: { Packages: [], BundledSkus: [
@@ -90,7 +90,7 @@ describe('Microsoft Store catalog parsing', () => {
   });
 
   it('does not treat an unsupported direct EAppx package as a resolvable bundle', () => {
-    const products = parseCatalogProducts({ productsList: [{ productId: '9eappx', title: 'Legacy PC Game', isGame: true }] }, {
+    const products = parseCatalogProducts({ productsList: [{ productId: '9eappx', title: 'Legacy PC Game', isGame: true, priceInfo: { displayPrice: '$9.99' } }] }, {
       Products: [{
         ProductId: '9EAPPX',
         DisplaySkuAvailabilities: [{ Sku: { Properties: { Packages: [{
@@ -100,6 +100,35 @@ describe('Microsoft Store catalog parsing', () => {
     });
     expect(products[0]).toMatchObject({ installability: 'unsupported', packageFormat: 'EAPPX' });
     expect(products[0].installProductId).toBeUndefined();
+  });
+
+  it('hides unpriced Store listings but preserves explicitly free and free-to-play offers separately', () => {
+    const products = parseCatalogProducts({ productsList: [
+      { productId: '9DELISTED', title: 'No longer sold', isGame: true },
+      { productId: '9FREEGAME', title: 'Free game', isGame: true, priceInfo: { displayPrice: 'Free', price: 0 } },
+      { productId: '9F2PGAME1', title: 'Free-to-play game', isGame: true, priceInfo: { displayPrice: 'Free', price: 0 }, categories: ['Free to Play'] },
+    ] }, catalog);
+    expect(products.map(product => [product.productId, product.purchasePrice, product.priceType])).toEqual([
+      ['9FREEGAME', 'Free', 'free'],
+      ['9F2PGAME1', 'Free-to-play', 'free-to-play'],
+    ]);
+  });
+
+  it('retains Store apps only for app-media requests', () => {
+    const searchResults = { productsList: [{
+      productId: '9APPPRODUCT01', title: 'Photo editor', isGame: false,
+      priceInfo: { displayPrice: '$4.99' }, categories: ['Productivity'],
+    }] };
+    expect(parseCatalogProducts(searchResults, catalog)).toHaveLength(0);
+    expect(parseCatalogProducts(searchResults, catalog, { allowNonGames: true })).toMatchObject([
+      { productId: '9APPPRODUCT01', title: 'Photo editor', isApp: true, purchasePrice: '$4.99' },
+    ]);
+  });
+
+  it('preserves unpriced licensed products when parsing account access', () => {
+    const product = parseCatalogProducts({ productsList: [{ productId: '9LICENSED', title: 'Licensed game', isGame: true }] }, catalog, { allowUnpriced: true });
+    expect(product).toHaveLength(1);
+    expect(product[0].purchasePrice).toBeUndefined();
   });
 });
 
@@ -143,7 +172,7 @@ describe('CatalogService', () => {
     expect(urls[1]).toContain('bigIds=9GAME123%2C9BUNDLE1');
   });
 
-  it('loads the live computed games collection and enriches its products', async () => {
+  it('loads a larger pageable computed games collection and enriches its products', async () => {
     const urls: string[] = [];
     const fetcher = (async (input: URL | RequestInfo) => {
       const url = String(input); urls.push(url);
@@ -155,9 +184,14 @@ describe('CatalogService', () => {
     const result = await new CatalogService(fetcher).featured('CZ');
     expect(result.query).toBe('Trending games');
     expect(result.market).toBe('CZ');
-    expect(result.hasMore).toBe(false);
+    expect(result.hasMore).toBe(true);
+    expect(result.cursor).toBe('next_page');
     expect(urls[0]).toContain('GetComputedProductsList');
     expect(urls[0]).toContain('mediaType=Games');
+    expect(urls[0]).toContain('noItems=100');
+    const next = await new CatalogService(fetcher).featured('CZ', 'games', 'next_page');
+    expect(next.hasMore).toBe(true);
+    expect(urls[2]).toContain('cursor=next_page');
   });
 
   it('looks up Store cover artwork by Product ID, preferring square box art, and rejects foreign hosts', async () => {
